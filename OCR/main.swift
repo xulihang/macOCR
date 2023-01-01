@@ -84,7 +84,7 @@ func main(args: [String]) -> Int32 {
                 line["text"] = string ?? ""
                 line["x"] = Int(rect.minX)
                 line["width"] = Int(rect.size.width)
-                line["y"] = Int(rect.minY)
+                line["y"] = Int(CGFloat(imgRef.height) - rect.minY - rect.size.height)
                 line["height"] = Int(rect.size.height)
                 lines.append(line)
                 allText = allText + (string ?? "")
