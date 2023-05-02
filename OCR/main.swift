@@ -70,6 +70,7 @@ func main(args: [String]) -> Int32 {
                 var line:[String:Any] = [:]
                 let candidate = observation.topCandidates(1).first
                 let string = candidate?.string
+                let confidence = candidate?.confidence
                 // Find the bounding-box observation for the string range.
                 let stringRange = string!.startIndex..<string!.endIndex
                 let boxObservation = try? candidate?.boundingBox(for: stringRange)
@@ -82,6 +83,7 @@ func main(args: [String]) -> Int32 {
                                                         Int(imgRef.height))
 
                 line["text"] = string ?? ""
+                line["confidence"] = confidence ?? ""
                 line["x"] = Int(rect.minX)
                 line["width"] = Int(rect.size.width)
                 line["y"] = Int(CGFloat(imgRef.height) - rect.minY - rect.size.height)
