@@ -9,3 +9,7 @@ usage:
 example:
     ./OCR en-US,zh-Hans false true ./image.jpg out.json
 ```
+
+## GUI Frontend
+
+[ImageTrans](https://www.basiccat.org/imagetrans/)
