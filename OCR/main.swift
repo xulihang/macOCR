@@ -1,129 +1,140 @@
-//
-//  main.swift
-//  OCR
-//
-//  Created by xulihang on 2023/1/1.
-//
-
 import Vision
 import Cocoa
 
-var MODE = VNRequestTextRecognitionLevel.accurate // or .fast
-var USE_LANG_CORRECTION = false
-var REVISION:Int
-if #available(macOS 11, *) {
-    REVISION = VNRecognizeTextRequestRevision2
-} else {
-    REVISION = VNRecognizeTextRequestRevision1
-}
+@available(macOS 13.0, *)
+func performOCR(on imagePath: String, outputDir: String?, languages: [String]) {
+    guard let img = NSImage(byReferencingFile: imagePath),
+          let imgRef = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        fputs("Error: failed to load or convert image '\(imagePath)'\n", stderr)
+        return
+    }
 
-func main(args: [String]) -> Int32 {
-    
-    if CommandLine.arguments.count == 2 {
-        if args[1] == "--langs" {
-            let request = VNRecognizeTextRequest.init()
-            request.revision = REVISION
-            request.recognitionLevel = VNRequestTextRecognitionLevel.accurate
-            let langs = try? request.supportedRecognitionLanguages()
-            for lang in langs! {
-                print(lang)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = false
+    request.revision = VNRecognizeTextRequestRevision3
+    request.recognitionLanguages = languages
+
+    let handler = VNImageRequestHandler(cgImage: imgRef, options: [:])
+
+    do {
+        try handler.perform([request])
+    } catch {
+        fputs("OCR execution failed for \(imagePath): \(error.localizedDescription)\n", stderr)
+        return
+    }
+
+    guard let results = request.results else {
+        fputs("No text results for \(imagePath).\n", stderr)
+        return
+    }
+
+    var output: [[String: Any]] = []
+
+    for observation in results {
+        var obsEntry: [String: Any] = [:]
+        var candidatesArray: [[String: Any]] = []
+
+        let candidates = observation.topCandidates(5)
+        for candidate in candidates {
+            var candidateDict: [String: Any] = [
+                "text": candidate.string,
+                "confidence": candidate.confidence
+            ]
+
+            let range = candidate.string.startIndex..<candidate.string.endIndex
+            if let box = try? candidate.boundingBox(for: range)?.boundingBox {
+                candidateDict["boundingBox"] = [
+                    "x": box.origin.x,
+                    "y": box.origin.y,
+                    "width": box.size.width,
+                    "height": box.size.height
+                ]
             }
-        }
-        return 0
-    }else if CommandLine.arguments.count == 6 {
-        let (language, fastmode, languageCorrection, src, dst) = (args[1], args[2],args[3],args[4],args[5])
-        let substrings = language.split(separator: ",")
-        var languages:[String] = []
-        for substring in substrings {
-            languages.append(String(substring))
-        }
-        if fastmode == "true" {
-            MODE = VNRequestTextRecognitionLevel.fast
-        }else{
-            MODE = VNRequestTextRecognitionLevel.accurate
-        }
-        
-        if languageCorrection == "true" {
-            USE_LANG_CORRECTION = true
-        }else{
-            USE_LANG_CORRECTION = false
+
+            candidatesArray.append(candidateDict)
         }
 
-        guard let img = NSImage(byReferencingFile: src) else {
-            fputs("Error: failed to load image '\(src)'\n", stderr)
-            return 1
-        }
-        guard let imgRef = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            fputs("Error: failed to convert NSImage to CGImage for '\(src)'\n", stderr)
-            return 1
-        }
+        obsEntry["candidates"] = candidatesArray
 
+        let box = observation.boundingBox
+        obsEntry["observationBoundingBox"] = [
+            "x": box.origin.x,
+            "y": box.origin.y,
+            "width": box.size.width,
+            "height": box.size.height
+        ]
 
-        let request = VNRecognizeTextRequest { (request, error) in
-            let observations = request.results as? [VNRecognizedTextObservation] ?? []
-            var dict:[String:Any] = [:]
-            var lines:[Any] = []
-            var allText = ""
-            var index = 0
-            for observation in observations {
-                // Find the top observation.
-                var line:[String:Any] = [:]
-                let candidate = observation.topCandidates(1).first
-                let string = candidate?.string
-                let confidence = candidate?.confidence
-                // Find the bounding-box observation for the string range.
-                let stringRange = string!.startIndex..<string!.endIndex
-                let boxObservation = try? candidate?.boundingBox(for: stringRange)
-                
-                // Get the normalized CGRect value.
-                let boundingBox = boxObservation?.boundingBox ?? .zero
-                // Convert the rectangle from normalized coordinates to image coordinates.
-                let rect = VNImageRectForNormalizedRect(boundingBox,
-                                                        Int(imgRef.width),
-                                                        Int(imgRef.height))
+        output.append(obsEntry)
+    }
 
-                line["text"] = string ?? ""
-                line["confidence"] = confidence ?? ""
-                line["x"] = Int(rect.minX)
-                line["width"] = Int(rect.size.width)
-                line["y"] = Int(CGFloat(imgRef.height) - rect.minY - rect.size.height)
-                line["height"] = Int(rect.size.height)
-                lines.append(line)
-                allText = allText + (string ?? "")
-                index = index + 1
-                if index != observations.count {
-                   allText = allText + "\n"
-                }
-            }
-            dict["lines"] = lines
-            dict["text"] = allText
-            let data = try? JSONSerialization.data(withJSONObject: dict, options: [])
-            let jsonString = String(data: data!,
-                                    encoding: .utf8) ?? "[]"
-            try? jsonString.write(to: URL(fileURLWithPath: dst), atomically: true, encoding: String.Encoding.utf8)
-        }
-        request.recognitionLevel = MODE
-        request.usesLanguageCorrection = USE_LANG_CORRECTION
-        request.revision = REVISION
-        request.recognitionLanguages = languages
-        //request.minimumTextHeight = 0
-        //request.customWords = [String]
-        try? VNImageRequestHandler(cgImage: imgRef, options: [:]).perform([request])
+    let inputURL = URL(fileURLWithPath: imagePath)
+    let filename = inputURL.deletingPathExtension().lastPathComponent
+    let outputFile = (outputDir ?? inputURL.deletingLastPathComponent().path) + "/" + filename + ".json"
 
-        return 0
-    }else{
-        print("""
-              usage:
-                language fastmode languageCorrection image_path output_path
-                --langs: list suppported languages
-              
-              example:
-                macOCR en false true ./image.jpg out.json
-              """)
-        return 1
+    do {
+        let jsonData = try JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted])
+        try jsonData.write(to: URL(fileURLWithPath: outputFile))
+        print("✅ OCR data written to \(outputFile)")
+    } catch {
+        fputs("Error writing JSON for \(imagePath): \(error.localizedDescription)\n", stderr)
     }
 }
 
+@available(macOS 13.0, *)
+func main(args: [String]) -> Int32 {
+    if CommandLine.arguments.count < 3 {
+        let request = VNRecognizeTextRequest()
+        request.revision = VNRecognizeTextRequestRevision3
+        request.recognitionLevel = .accurate
+        let langs = (try? request.supportedRecognitionLanguages()) ?? []
 
+        if let data = try? JSONSerialization.data(withJSONObject: langs, options: []),
+           let langsJson = String(data: data, encoding: .utf8) {
+            print("supported_languages:\(langsJson)")
+        }
 
-exit(main(args: CommandLine.arguments))
+        print("""
+        usage:
+          macOCR languages image_or_directory_path [output_directory]
+
+        example:
+          macOCR en ./image.jpg
+          macOCR en ./images/ ./ocr_output/
+
+        If output_directory is not provided, output is saved next to the input image(s).
+        """)
+        return 1
+    }
+
+    let languageArg = args[1]
+    let inputPath = args[2]
+    let outputPath = args.count > 3 ? args[3] : nil
+    let languages = languageArg.split(separator: ",").map { String($0) }
+
+    var isDir: ObjCBool = false
+    let fileManager = FileManager.default
+
+    if fileManager.fileExists(atPath: inputPath, isDirectory: &isDir), isDir.boolValue {
+        guard let files = try? fileManager.contentsOfDirectory(atPath: inputPath) else {
+            fputs("Error reading directory: \(inputPath)\n", stderr)
+            return 1
+        }
+
+        for file in files where file.lowercased().hasSuffix(".jpg") || file.lowercased().hasSuffix(".jpeg") || file.lowercased().hasSuffix(".png") {
+            let fullPath = (inputPath as NSString).appendingPathComponent(file)
+            performOCR(on: fullPath, outputDir: outputPath, languages: languages)
+        }
+    } else {
+        performOCR(on: inputPath, outputDir: outputPath, languages: languages)
+    }
+
+    return 0
+}
+
+if #available(macOS 13.0, *) {
+    exit(main(args: CommandLine.arguments))
+} else {
+    fputs("This tool requires macOS 13 or newer.\n", stderr)
+    exit(1)
+}
