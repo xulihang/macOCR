@@ -155,6 +155,9 @@ Or use the certificate hash:
 codesign --timestamp --options runtime --sign E0F5D47B058F455216F3E2BA3D6EA58E07453C32 ./OCR
 ```
 
+`IMPORTANT`: If it says already signed, then this is because XCode automatically signs it, so you may need to remove the signature first then resign:
+codesign --remove-signature `/Users/.../Library/Developer/Xcode/DerivedData/OCR-cnhwvhkmntjhlffvhbrehkvrqyyf/Build/Products/Release/OCR`
+
 **Verify the signature**:
 
 ```bash
