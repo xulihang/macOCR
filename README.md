@@ -4,14 +4,15 @@ A minimal Swift command-line tool that uses Apple's [Vision framework](https://d
 
 ## Features
 
-- Leverages `VNRecognizeTextRequestRevision3` for improved accuracy and RTL support.
+- Leverages `VNRecognizeTextRequestRevision3` for improved accuracy.
 - Outputs structured JSON including:
-  - Top OCR candidates
-  - Text confidence
-  - Bounding box geometry
+  - Top OCR candidate text only
+  - Bounding box geometry (with Y-axis flipped correctly)
 - Automatically detects supported OCR languages
 - Supports individual images or whole directories
-- Outputs `.json` files named after the original image
+- Batch processes entire folders into a single consolidated JSON file
+- Supports RTL languages like Arabic
+- Outputs `.json` files named after the input image or a single `batch_output.json` for directories
 
 ## Requirements
 
@@ -22,7 +23,7 @@ A minimal Swift command-line tool that uses Apple's [Vision framework](https://d
 ## Usage
 
 ```sh
-macOCR <language> <image_path|directory_path> [output_dir]
+macOCR <languages> <image_path|directory_path> [output_dir]
 ```
 
 ### Examples
@@ -30,18 +31,33 @@ macOCR <language> <image_path|directory_path> [output_dir]
 #### OCR a single image:
 
 ```sh
-macOCR ar ./page1.jpg ./output/
+macOCR en ./page1.jpg ./output/
 ```
 
-This will produce `./output/page1.json`.
+Produces `./output/page1.json`.
 
 #### OCR all images in a directory:
 
 ```sh
-macOCR en ./scanned_pages ./output/
+macOCR en ./scanned_pages/ ./output/
 ```
 
-This will process each image in the folder and output JSON files with matching names into `./output/`.
+Produces a single file `./output/batch_output.json` with structure:
+
+```json
+{
+  "page1.jpg": {
+    "width": 1000,
+    "height": 1500,
+    "observations": [
+      { "text": "example", "bbox": { "x": 123, "y": 456, "width": 78, "height": 90 } }
+    ]
+  },
+  "page2.jpg": {
+    ...
+  }
+}
+```
 
 #### Show help (and list of supported languages):
 
@@ -51,19 +67,19 @@ macOCR
 
 ## Output Format
 
+- Each output includes:
+  - `width`, `height` of the image
+  - `observations`, where each observation contains:
+    - `text` (top candidate only)
+    - `bbox` (bounding box with flipped Y coordinate)
+
 Each `.json` file will contain an array of OCR blocks, for example:
 
 ```json
 [
   {
-    "observationBoundingBox": { "x": ..., "y": ..., "width": ..., "height": ... },
-    "candidates": [
-      {
-        "text": "Sample text",
-        "confidence": 0.85,
-        "boundingBox": { "x": ..., "y": ..., "width": ..., "height": ... }
-      }
-    ]
+    "bbox": { "x": ..., "y": ..., "width": ..., "height": ... },
+    "text": "Sample text"
   },
   ...
 ]
@@ -71,9 +87,9 @@ Each `.json` file will contain an array of OCR blocks, for example:
 
 ## Notes
 
-- Right-to-left languages like Arabic are supported.
-- You can pass multiple comma-separated language codes (e.g., `en,ar`).
-- Custom OCR vocabulary can be added via the Vision API (not yet exposed via CLI).
+- Bounding boxes are provided with pixel coordinates relative to the actual image size.
+- Flipped Y-coordinate to match top-down origin.
+- No confidence scores or multiple candidates are output.
 
 ## Build
 

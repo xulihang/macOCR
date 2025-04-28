@@ -2,12 +2,15 @@ import Vision
 import Cocoa
 
 @available(macOS 13.0, *)
-func performOCR(on imagePath: String, outputDir: String?, languages: [String]) {
+func performOCR(on imagePath: String, languages: [String]) -> [String: Any]? {
     guard let img = NSImage(byReferencingFile: imagePath),
           let imgRef = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
         fputs("Error: failed to load or convert image '\(imagePath)'\n", stderr)
-        return
+        return nil
     }
+
+    let imageWidth = CGFloat(imgRef.width)
+    let imageHeight = CGFloat(imgRef.height)
 
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
@@ -21,64 +24,41 @@ func performOCR(on imagePath: String, outputDir: String?, languages: [String]) {
         try handler.perform([request])
     } catch {
         fputs("OCR execution failed for \(imagePath): \(error.localizedDescription)\n", stderr)
-        return
+        return nil
     }
 
     guard let results = request.results else {
         fputs("No text results for \(imagePath).\n", stderr)
-        return
+        return nil
     }
 
-    var output: [[String: Any]] = []
+    var observations: [[String: Any]] = []
 
     for observation in results {
-        var obsEntry: [String: Any] = [:]
-        var candidatesArray: [[String: Any]] = []
+        guard let candidate = observation.topCandidates(1).first else { continue }
 
-        let candidates = observation.topCandidates(5)
-        for candidate in candidates {
-            var candidateDict: [String: Any] = [
-                "text": candidate.string,
-                "confidence": candidate.confidence
+        let range = candidate.string.startIndex..<candidate.string.endIndex
+        let box = (try? candidate.boundingBox(for: range)?.boundingBox) ?? observation.boundingBox
+
+        let absBox = VNImageRectForNormalizedRect(box, Int(imageWidth), Int(imageHeight))
+        let flippedY = imageHeight - absBox.origin.y - absBox.size.height
+
+        observations.append([
+            "text": candidate.string,
+            "bbox": [
+                "x": absBox.origin.x,
+                "y": flippedY,
+                "width": absBox.size.width,
+                "height": absBox.size.height
             ]
-
-            let range = candidate.string.startIndex..<candidate.string.endIndex
-            if let box = try? candidate.boundingBox(for: range)?.boundingBox {
-                candidateDict["boundingBox"] = [
-                    "x": box.origin.x,
-                    "y": box.origin.y,
-                    "width": box.size.width,
-                    "height": box.size.height
-                ]
-            }
-
-            candidatesArray.append(candidateDict)
-        }
-
-        obsEntry["candidates"] = candidatesArray
-
-        let box = observation.boundingBox
-        obsEntry["observationBoundingBox"] = [
-            "x": box.origin.x,
-            "y": box.origin.y,
-            "width": box.size.width,
-            "height": box.size.height
-        ]
-
-        output.append(obsEntry)
+        ])
     }
 
-    let inputURL = URL(fileURLWithPath: imagePath)
-    let filename = inputURL.deletingPathExtension().lastPathComponent
-    let outputFile = (outputDir ?? inputURL.deletingLastPathComponent().path) + "/" + filename + ".json"
-
-    do {
-        let jsonData = try JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted])
-        try jsonData.write(to: URL(fileURLWithPath: outputFile))
-        print("✅ OCR data written to \(outputFile)")
-    } catch {
-        fputs("Error writing JSON for \(imagePath): \(error.localizedDescription)\n", stderr)
-    }
+    return [
+        "width": Int(imageWidth),
+        "height": Int(imageHeight),
+        "observations": observations
+    ]
 }
 
 @available(macOS 13.0, *)
@@ -114,6 +94,7 @@ func main(args: [String]) -> Int32 {
 
     var isDir: ObjCBool = false
     let fileManager = FileManager.default
+    let inputURL = URL(fileURLWithPath: inputPath)
 
     if fileManager.fileExists(atPath: inputPath, isDirectory: &isDir), isDir.boolValue {
         guard let files = try? fileManager.contentsOfDirectory(atPath: inputPath) else {
@@ -121,12 +102,40 @@ func main(args: [String]) -> Int32 {
             return 1
         }
 
+        var batchOutput: [String: Any] = [:]
+
         for file in files where file.lowercased().hasSuffix(".jpg") || file.lowercased().hasSuffix(".jpeg") || file.lowercased().hasSuffix(".png") {
             let fullPath = (inputPath as NSString).appendingPathComponent(file)
-            performOCR(on: fullPath, outputDir: outputPath, languages: languages)
+            if let ocrResult = performOCR(on: fullPath, languages: languages) {
+                batchOutput[file] = ocrResult
+            }
+        }
+
+        let finalOutputPath = (outputPath ?? inputURL.path) + "/batch_output.json"
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: batchOutput, options: [.prettyPrinted])
+            try jsonData.write(to: URL(fileURLWithPath: finalOutputPath))
+            print("✅ Batch OCR data written to \(finalOutputPath)")
+        } catch {
+            fputs("Error writing batch JSON: \(error.localizedDescription)\n", stderr)
+            return 1
         }
     } else {
-        performOCR(on: inputPath, outputDir: outputPath, languages: languages)
+        guard let ocrResult = performOCR(on: inputPath, languages: languages) else {
+            return 1
+        }
+
+        let filename = inputURL.deletingPathExtension().lastPathComponent
+        let outputFile = (outputPath ?? inputURL.deletingLastPathComponent().path) + "/" + filename + ".json"
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: ocrResult, options: [.prettyPrinted])
+            try jsonData.write(to: URL(fileURLWithPath: outputFile))
+            print("✅ OCR data written to \(outputFile)")
+        } catch {
+            fputs("Error writing JSON for \(inputPath): \(error.localizedDescription)\n", stderr)
+            return 1
+        }
     }
 
     return 0
