@@ -11,9 +11,12 @@ import Cocoa
 var MODE = VNRequestTextRecognitionLevel.accurate // or .fast
 var USE_LANG_CORRECTION = false
 var REVISION:Int
-if #available(macOS 11, *) {
+
+if #available(macOS 13, *) {
+    REVISION = VNRecognizeTextRequestRevision3
+} else if #available(macOS 11, *) {
     REVISION = VNRecognizeTextRequestRevision2
-} else {
+}else{
     REVISION = VNRecognizeTextRequestRevision1
 }
 
