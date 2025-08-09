@@ -34,6 +34,127 @@ func round3(_ v: CGFloat) -> NSDecimalNumber {
     return round3(Double(v))
 }
 
+struct CommandLineOptions {
+    var inputPath: String = ""
+    var outputPath: String? = nil
+    var languages: [String] = ["en"]
+    var pageRange: ClosedRange<Int>? = nil
+    var showHelp: Bool = false
+    var showSupportedLanguages: Bool = false
+}
+
+func parseCommandLineArguments(_ args: [String]) -> CommandLineOptions? {
+    var options = CommandLineOptions()
+    var i = 1 // Skip program name
+    
+    while i < args.count {
+        let arg = args[i]
+        
+        switch arg {
+        case "-h", "--help":
+            options.showHelp = true
+            return options
+            
+        case "--supported-languages":
+            options.showSupportedLanguages = true
+            return options
+            
+        case "-l", "--language", "--languages":
+            guard i + 1 < args.count else {
+                fputs("Error: \(arg) requires a value\n", stderr)
+                return nil
+            }
+            i += 1
+            options.languages = args[i].split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
+            
+        case "-o", "--output":
+            guard i + 1 < args.count else {
+                fputs("Error: \(arg) requires a value\n", stderr)
+                return nil
+            }
+            i += 1
+            options.outputPath = args[i]
+            
+        case "-p", "--pages":
+            guard i + 1 < args.count else {
+                fputs("Error: \(arg) requires a value\n", stderr)
+                return nil
+            }
+            i += 1
+            let parts = args[i].split(separator: "-").compactMap { Int($0) }
+            if parts.count == 2, parts[0] > 0, parts[1] >= parts[0] {
+                options.pageRange = parts[0]...parts[1]
+            } else {
+                fputs("Error: Invalid page range format. Use format like '2-5'\n", stderr)
+                return nil
+            }
+            
+        default:
+            if arg.hasPrefix("-") {
+                fputs("Error: Unknown option '\(arg)'\n", stderr)
+                return nil
+            } else {
+                // This should be the input path
+                if options.inputPath.isEmpty {
+                    options.inputPath = arg
+                } else {
+                    fputs("Error: Multiple input paths specified\n", stderr)
+                    return nil
+                }
+            }
+        }
+        
+        i += 1
+    }
+    
+    return options
+}
+
+func printUsage() {
+    print("""
+    macOCR - OCR tool for images and PDFs using macOS Vision framework
+    
+    USAGE:
+        macOCR [OPTIONS] <input_path>
+    
+    OPTIONS:
+        -l, --language <languages>      Comma-separated list of language codes (default: en)
+        -o, --output <path>             Output file or directory path
+        -p, --pages <range>             Page range for PDFs (e.g., 2-5)
+        -h, --help                      Show this help message
+        --supported-languages           List all supported recognition languages
+    
+    EXAMPLES:
+        macOCR image.jpg
+        macOCR --language en,es --output results.json document.pdf
+        macOCR --language en --pages 1-3 --output output/ document.pdf
+        macOCR --language ar-SA images_directory/ --output ocr_results/
+        macOCR --supported-languages
+    
+    NOTES:
+        - If output path ends with .json, it will be used as the exact output filename
+        - For directories, if no output is specified, results are saved as 'batch_output.json' in the input directory
+        - For single files, if no output is specified, results are saved alongside the input file
+        - Page ranges are 1-indexed (first page is page 1)
+    """)
+}
+
+@available(macOS 15.0, *)
+func printSupportedLanguages() {
+    let request = VNRecognizeTextRequest()
+    request.revision = VNRecognizeTextRequestRevision3
+    request.recognitionLevel = .accurate
+    let langs = (try? request.supportedRecognitionLanguages()) ?? []
+    
+    if let data = try? JSONSerialization.data(withJSONObject: langs, options: []),
+       let langsJson = String(data: data, encoding: .utf8) {
+        print("Supported recognition languages:")
+        print(langsJson)
+    } else {
+        print("Error: Could not retrieve supported languages")
+    }
+}
+
 @available(macOS 15.0, *)
 func performOCR(cgImage: CGImage, languages: [String]) -> [String: Any]? {
     let imageWidth = CGFloat(cgImage.width)
@@ -120,44 +241,30 @@ func writeJSONObjectOrdered(_ object: [String: Any], to finalOutputPath: String)
 
 @available(macOS 15.0, *)
 func main(args: [String]) -> Int32 {
-    if CommandLine.arguments.count < 3 {
-        let request = VNRecognizeTextRequest()
-        request.revision = VNRecognizeTextRequestRevision3
-        request.recognitionLevel = .accurate
-        let langs = (try? request.supportedRecognitionLanguages()) ?? []
-
-        if let data = try? JSONSerialization.data(withJSONObject: langs, options: []),
-           let langsJson = String(data: data, encoding: .utf8) {
-            print("supported_languages:\(langsJson)")
-        }
-
-        print("""
-        usage:
-          macOCR languages image_or_directory_path [output_directory_or_filename]
-
-        examples:
-          macOCR en ./image.jpg
-          macOCR en ./images/ ./ocr_output/
-          macOCR en ./document.pdf ./my_pdf_pages.json
-
-        Notes:
-        - If output_directory_or_filename ends with .json it will be used as the exact output file name.
-        - If a directory is given for batch processing and no output is provided, a 'batch_output.json' file is written into the input directory.
-        """)
+    guard let options = parseCommandLineArguments(args) else {
+        return 1
+    }
+    
+    if options.showHelp {
+        printUsage()
+        return 0
+    }
+    
+    if options.showSupportedLanguages {
+        printSupportedLanguages()
+        return 0
+    }
+    
+    if options.inputPath.isEmpty {
+        fputs("Error: No input path specified\n\n", stderr)
+        printUsage()
         return 1
     }
 
-    let languageArg = args[1]
-    let inputPath = args[2]
-    let outputPath = args.count > 3 ? args[3] : nil
-    var pageRange: ClosedRange<Int>? = nil
-    if args.count > 4 {
-        let parts = args[4].split(separator: "-").compactMap { Int($0) }
-        if parts.count == 2, parts[0] > 0, parts[1] >= parts[0] {
-            pageRange = parts[0]...parts[1]
-        }
-    }
-    let languages = languageArg.split(separator: ",").map { String($0) }
+    let inputPath = options.inputPath
+    let outputPath = options.outputPath
+    let pageRange = options.pageRange
+    let languages = options.languages
 
     var isDir: ObjCBool = false
     let fileManager = FileManager.default
@@ -241,7 +348,7 @@ func main(args: [String]) -> Int32 {
                 }
 
                 // Compute DPI from first page
-                if i == 0 {
+                if i == (startPage-1) {
                     let rawDpiX = Double(cgImg.width)  / (Double(pageBounds.width)  / 72.0)
                     let rawDpiY = Double(cgImg.height) / (Double(pageBounds.height) / 72.0)
                     dpiX = round3(rawDpiX)
@@ -315,6 +422,6 @@ func main(args: [String]) -> Int32 {
 if #available(macOS 15.0, *) {
     exit(main(args: CommandLine.arguments))
 } else {
-    fputs("This tool requires macOS 13 or newer.\n", stderr)
+    fputs("This tool requires macOS 15 or newer.\n", stderr)
     exit(1)
 }
