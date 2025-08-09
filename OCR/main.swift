@@ -128,11 +128,12 @@ func printUsage() {
         macOCR image.jpg
         macOCR --language en,es --output results.json document.pdf
         macOCR --language en --pages 1-3 --output output/ document.pdf
-        macOCR --language ar-SA images_directory/ --output ocr_results/
+        macOCR --language en,fr,de images_directory/ --output ocr_results/
         macOCR --supported-languages
     
     NOTES:
-        - If output path ends with .json, it will be used as the exact output filename
+        - If output path ends with .json, JSON format will be used
+        - If output path ends with .txt, plain text format will be used (text only, no coordinates)
         - For directories, if no output is specified, results are saved as 'batch_output.json' in the input directory
         - For single files, if no output is specified, results are saved alongside the input file
         - Page ranges are 1-indexed (first page is page 1)
@@ -240,6 +241,60 @@ func writeJSONObjectOrdered(_ object: [String: Any], to finalOutputPath: String)
 }
 
 @available(macOS 15.0, *)
+func writeTextOutput(_ object: [String: Any], to finalOutputPath: String) throws {
+    var textLines: [String] = []
+    
+    // For batch processing (directory of images)
+    if let batchData = object as? [String: [String: Any]] {
+        let sortedKeys = batchData.keys.sorted { a, b in
+            a.localizedStandardCompare(b) == .orderedAscending
+        }
+        
+        for filename in sortedKeys {
+            if let fileData = batchData[filename],
+               let observations = fileData["observations"] as? [[String: Any]] {
+                if !textLines.isEmpty {
+                    textLines.append("") // Add blank line between files
+                }
+                textLines.append("=== \(filename) ===")
+                for observation in observations {
+                    if let text = observation["text"] as? String {
+                        textLines.append(text)
+                    }
+                }
+            }
+        }
+    }
+    // For PDF processing
+    else if let pages = object["pages"] as? [[String: Any]] {
+        for (index, page) in pages.enumerated() {
+            if index > 0 {
+                textLines.append("") // Add blank line between pages
+            }
+
+            if let observations = page["observations"] as? [[String: Any]] {
+                for observation in observations {
+                    if let text = observation["text"] as? String {
+                        textLines.append(text)
+                    }
+                }
+            }
+        }
+    }
+    // For single image processing
+    else if let observations = object["observations"] as? [[String: Any]] {
+        for observation in observations {
+            if let text = observation["text"] as? String {
+                textLines.append(text)
+            }
+        }
+    }
+    
+    let textContent = textLines.joined(separator: "\n")
+    try textContent.write(to: URL(fileURLWithPath: finalOutputPath), atomically: true, encoding: .utf8)
+}
+
+@available(macOS 15.0, *)
 func main(args: [String]) -> Int32 {
     guard let options = parseCommandLineArguments(args) else {
         return 1
@@ -297,7 +352,7 @@ func main(args: [String]) -> Int32 {
         // determine final output path: if provided and ends with .json, use as filename; otherwise treat as directory
         let finalOutputPath: String
         if let out = outputPath {
-            if out.lowercased().hasSuffix(".json") {
+            if out.lowercased().hasSuffix(".json") || out.lowercased().hasSuffix(".txt") {
                 finalOutputPath = out
             } else {
                 finalOutputPath = (out as NSString).appendingPathComponent("batch_output.json")
@@ -307,10 +362,15 @@ func main(args: [String]) -> Int32 {
         }
 
         do {
-            try writeJSONObjectOrdered(batchOutput, to: finalOutputPath)
-            print("✅ Batch OCR data written to \(finalOutputPath)")
+            if finalOutputPath.lowercased().hasSuffix(".txt") {
+                try writeTextOutput(batchOutput, to: finalOutputPath)
+                print("✅ Batch OCR text written to \(finalOutputPath)")
+            } else {
+                try writeJSONObjectOrdered(batchOutput, to: finalOutputPath)
+                print("✅ Batch OCR data written to \(finalOutputPath)")
+            }
         } catch {
-            fputs("Error writing batch JSON: \(error.localizedDescription)\n", stderr)
+            fputs("Error writing batch output: \(error.localizedDescription)\n", stderr)
             return 1
         }
     } else {
@@ -369,7 +429,7 @@ func main(args: [String]) -> Int32 {
 
             let finalOutputPath: String
             if let out = outputPath {
-                if out.lowercased().hasSuffix(".json") {
+                if out.lowercased().hasSuffix(".json") || out.lowercased().hasSuffix(".txt") {
                     finalOutputPath = out
                 } else {
                     finalOutputPath = (out as NSString).appendingPathComponent(inputURL.deletingPathExtension().lastPathComponent + "_pdf_output.json")
@@ -379,11 +439,16 @@ func main(args: [String]) -> Int32 {
             }
 
             do {
-                let jsonData = try JSONSerialization.data(withJSONObject: pdfOutput, options: [.prettyPrinted])
-                try jsonData.write(to: URL(fileURLWithPath: finalOutputPath))
-                print("✅ PDF OCR data written to \(finalOutputPath)")
+                if finalOutputPath.lowercased().hasSuffix(".txt") {
+                    try writeTextOutput(pdfOutput, to: finalOutputPath)
+                    print("✅ PDF OCR text written to \(finalOutputPath)")
+                } else {
+                    let jsonData = try JSONSerialization.data(withJSONObject: pdfOutput, options: [.prettyPrinted])
+                    try jsonData.write(to: URL(fileURLWithPath: finalOutputPath))
+                    print("✅ PDF OCR data written to \(finalOutputPath)")
+                }
             } catch {
-                fputs("Error writing PDF JSON: \(error.localizedDescription)\n", stderr)
+                fputs("Error writing PDF output: \(error.localizedDescription)\n", stderr)
                 return 1
             }
         } else {
@@ -395,8 +460,8 @@ func main(args: [String]) -> Int32 {
             let filename = inputURL.deletingPathExtension().lastPathComponent
             let outputFile: String
             if let out = outputPath {
-                // if out looks like a directory (doesn't end with .json), treat as directory
-                if out.lowercased().hasSuffix(".json") {
+                // if out looks like a directory (doesn't end with .json or .txt), treat as directory
+                if out.lowercased().hasSuffix(".json") || out.lowercased().hasSuffix(".txt") {
                     outputFile = out
                 } else {
                     outputFile = (out as NSString).appendingPathComponent(filename + ".json")
@@ -406,11 +471,16 @@ func main(args: [String]) -> Int32 {
             }
 
             do {
-                let jsonData = try JSONSerialization.data(withJSONObject: ocrResult, options: [.prettyPrinted])
-                try jsonData.write(to: URL(fileURLWithPath: outputFile))
-                print("✅ OCR data written to \(outputFile)")
+                if outputFile.lowercased().hasSuffix(".txt") {
+                    try writeTextOutput(ocrResult, to: outputFile)
+                    print("✅ OCR text written to \(outputFile)")
+                } else {
+                    let jsonData = try JSONSerialization.data(withJSONObject: ocrResult, options: [.prettyPrinted])
+                    try jsonData.write(to: URL(fileURLWithPath: outputFile))
+                    print("✅ OCR data written to \(outputFile)")
+                }
             } catch {
-                fputs("Error writing JSON for \(inputPath): \(error.localizedDescription)\n", stderr)
+                fputs("Error writing output for \(inputPath): \(error.localizedDescription)\n", stderr)
                 return 1
             }
         }
