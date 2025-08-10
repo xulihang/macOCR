@@ -2,6 +2,11 @@ import Vision
 import Cocoa
 import PDFKit
 
+/**
+ * Rounds a Double value to exactly 3 decimal places using NSDecimalNumber for precision
+ * - Parameter v: The double value to round
+ * - Returns: NSDecimalNumber rounded to 3 decimal places with exact formatting
+ */
 func round3(_ v: Double) -> NSDecimalNumber {
     // Round using Decimal to 3 decimal places (base-10)
     var dec = Decimal(v)
@@ -30,19 +35,38 @@ func round3(_ v: Double) -> NSDecimalNumber {
     return NSDecimalNumber(string: s)
 }
 
+/**
+ * Convenience wrapper for round3 that accepts CGFloat
+ * - Parameter v: The CGFloat value to round
+ * - Returns: NSDecimalNumber rounded to 3 decimal places
+ */
 func round3(_ v: CGFloat) -> NSDecimalNumber {
     return round3(Double(v))
 }
 
+/**
+ * Configuration structure for command-line options
+ */
 struct CommandLineOptions {
+    /// Path to input file or directory
     var inputPath: String = ""
+    /// Optional output path for results
     var outputPath: String? = nil
+    /// Array of language codes for OCR recognition
     var languages: [String] = ["en"]
+    /// Optional page range for PDF processing (1-indexed)
     var pageRange: ClosedRange<Int>? = nil
+    /// Flag to show help message
     var showHelp: Bool = false
+    /// Flag to show supported languages
     var showSupportedLanguages: Bool = false
 }
 
+/**
+ * Parses command-line arguments into CommandLineOptions structure
+ * - Parameter args: Array of command-line arguments
+ * - Returns: Parsed options or nil if parsing failed
+ */
 func parseCommandLineArguments(_ args: [String]) -> CommandLineOptions? {
     var options = CommandLineOptions()
     var i = 1 // Skip program name
@@ -110,36 +134,145 @@ func parseCommandLineArguments(_ args: [String]) -> CommandLineOptions? {
     return options
 }
 
+/**
+ * Prints comprehensive usage information for the macOCR tool
+ */
 func printUsage() {
     print("""
     macOCR - OCR tool for images and PDFs using macOS Vision framework
+    
+    DESCRIPTION:
+        A high-accuracy OCR command-line tool that leverages Apple's Vision framework
+        to extract text from images and PDF documents. Outputs structured JSON with
+        text content and precise bounding box coordinates, or plain text format.
     
     USAGE:
         macOCR [OPTIONS] <input_path>
     
     OPTIONS:
-        -l, --language <languages>      Comma-separated list of language codes (default: en)
+        -l, --language <languages>      Comma-separated list of language codes for OCR
+                                        recognition (default: en)
+                                        Examples: en, en,es, ar,en,fr
+        
         -o, --output <path>             Output file or directory path
-        -p, --pages <range>             Page range for PDFs (e.g., 2-5)
-        -h, --help                      Show this help message
-        --supported-languages           List all supported recognition languages
+                                        - If path ends with .json: JSON format output
+                                        - If path ends with .txt: Plain text output
+                                        - If path is directory: Files saved within
+        
+        -p, --pages <range>             Page range for PDF processing (1-indexed)
+                                        Format: start-end (e.g., 1-5, 3-10)
+                                        Only processes specified pages
+        
+        -h, --help                      Show this comprehensive help message
+        
+        --supported-languages           List all supported OCR language codes
+                                        Output in JSON format
+    
+    INPUT FORMATS:
+        Images:     .jpg, .jpeg, .png
+        Documents:  .pdf (with optional page range)
+        Batch:      Directory containing supported image files
+    
+    OUTPUT FORMATS:
+        JSON (.json):
+            - Full OCR data with bounding boxes and metadata
+            - Coordinates use top-left origin with flipped Y-axis
+            - Precision: 3 decimal places for all measurements
+            
+        Text (.txt):
+            - Plain text content only, no coordinates
+            - Preserves reading order and line breaks
     
     EXAMPLES:
-        macOCR image.jpg
-        macOCR --language en,es --output results.json document.pdf
-        macOCR --language en --pages 1-3 --output output/ document.pdf
-        macOCR --language en,fr,de images_directory/ --output ocr_results/
-        macOCR --supported-languages
+        Basic image OCR:
+            macOCR image.jpg
+            → Creates image.json in same directory
+        
+        Multi-language with custom output:
+            macOCR --language en,es,fr --output results.json document.pdf
+            → OCR with English, Spanish, French; save as results.json
+        
+        PDF page range processing:
+            macOCR --language en --pages 1-3 --output output/ document.pdf
+            → Process first 3 pages, save in output/ directory
+        
+        Batch directory processing:
+            macOCR --language en,ar images_directory/ --output ocr_results/
+            → Process all images with English+Arabic, save batch_output.json
+        
+        Text-only output:
+            macOCR --output results.txt image.jpg
+            → Extract text content only, no bounding boxes
+        
+        List supported languages:
+            macOCR --supported-languages
+            → Display JSON array of all available language codes
     
-    NOTES:
-        - If output path ends with .json, JSON format will be used
-        - If output path ends with .txt, plain text format will be used (text only, no coordinates)
-        - For directories, if no output is specified, results are saved as 'batch_output.json' in the input directory
-        - For single files, if no output is specified, results are saved alongside the input file
-        - Page ranges are 1-indexed (first page is page 1)
+    OUTPUT STRUCTURE:
+        Single Image JSON:
+        {
+            "width": 1200,
+            "height": 800,
+            "observations": [
+                {
+                    "text": "Detected text content",
+                    "bbox": {
+                        "x": 123.456,
+                        "y": 78.901,
+                        "width": 234.567,
+                        "height": 45.678
+                    }
+                }
+            ]
+        }
+        
+        PDF JSON:
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "width": 1200,
+                    "height": 800,
+                    "observations": [...]
+                }
+            ],
+            "dpi": { "x": 144.000, "y": 144.000 }
+        }
+        
+        Batch Processing JSON:
+        {
+            "image1.jpg": { ... },
+            "image2.png": { ... }
+        }
+    
+    TECHNICAL DETAILS:
+        - Uses VNRecognizeTextRequestRevision3 for maximum accuracy
+        - Supports RTL languages (Arabic, Hebrew, etc.)
+        - Bounding boxes use absolute pixel coordinates
+        - Y-coordinates flipped to match standard top-down origin
+        - Natural sorting for batch processing (10.jpg after 2.jpg)
+        - PDF rendering at 2x scale for improved text recognition
+    
+    SYSTEM REQUIREMENTS:
+        - macOS 15.0 or later
+        - Apple Silicon or Intel Mac
+        - Vision framework availability
+    
+    LANGUAGE SUPPORT:
+        Use --supported-languages to see all available codes.
+        Common codes: en (English), es (Spanish), fr (French), 
+        de (German), zh (Chinese), ja (Japanese), ar (Arabic), etc.
+    
+    EXIT CODES:
+        0    Success
+        1    Error (invalid arguments, file not found, OCR failure, etc.)
     """)
 }
 
+/**
+ * Retrieves and displays all supported OCR languages from Vision framework
+ * Available only on macOS 15.0+
+ */
 @available(macOS 15.0, *)
 func printSupportedLanguages() {
     let request = VNRecognizeTextRequest()
@@ -156,6 +289,13 @@ func printSupportedLanguages() {
     }
 }
 
+/**
+ * Performs OCR on a CGImage using Apple's Vision framework
+ * - Parameters:
+ *   - cgImage: The CGImage to process
+ *   - languages: Array of language codes for recognition
+ * - Returns: Dictionary containing OCR results with width, height, and observations
+ */
 @available(macOS 15.0, *)
 func performOCR(cgImage: CGImage, languages: [String]) -> [String: Any]? {
     let imageWidth = CGFloat(cgImage.width)
@@ -210,6 +350,13 @@ func performOCR(cgImage: CGImage, languages: [String]) -> [String: Any]? {
     ]
 }
 
+/**
+ * Performs OCR on an image file
+ * - Parameters:
+ *   - imagePath: Path to the image file
+ *   - languages: Array of language codes for recognition
+ * - Returns: Dictionary containing OCR results or nil if failed
+ */
 @available(macOS 15.0, *)
 func performOCR(on imagePath: String, languages: [String]) -> [String: Any]? {
     guard let img = NSImage(byReferencingFile: imagePath),
@@ -221,6 +368,13 @@ func performOCR(on imagePath: String, languages: [String]) -> [String: Any]? {
     return performOCR(cgImage: imgRef, languages: languages)
 }
 
+/**
+ * Writes a dictionary to JSON file with deterministic key ordering
+ * - Parameters:
+ *   - object: Dictionary to serialize
+ *   - finalOutputPath: Path where JSON file should be written
+ * - Throws: Error if writing fails
+ */
 @available(macOS 15.0, *)
 func writeJSONObjectOrdered(_ object: [String: Any], to finalOutputPath: String) throws {
     // Ensure deterministic order: use localizedStandardCompare for filenames and numeric order for numeric keys
@@ -240,6 +394,13 @@ func writeJSONObjectOrdered(_ object: [String: Any], to finalOutputPath: String)
     try jsonData.write(to: URL(fileURLWithPath: finalOutputPath))
 }
 
+/**
+ * Writes OCR results as plain text format
+ * - Parameters:
+ *   - object: OCR results dictionary
+ *   - finalOutputPath: Path where text file should be written
+ * - Throws: Error if writing fails
+ */
 @available(macOS 15.0, *)
 func writeTextOutput(_ object: [String: Any], to finalOutputPath: String) throws {
     var textLines: [String] = []
@@ -294,6 +455,11 @@ func writeTextOutput(_ object: [String: Any], to finalOutputPath: String) throws
     try textContent.write(to: URL(fileURLWithPath: finalOutputPath), atomically: true, encoding: .utf8)
 }
 
+/**
+ * Main application entry point
+ * - Parameter args: Command-line arguments
+ * - Returns: Exit code (0 for success, 1 for error)
+ */
 @available(macOS 15.0, *)
 func main(args: [String]) -> Int32 {
     guard let options = parseCommandLineArguments(args) else {
@@ -489,6 +655,7 @@ func main(args: [String]) -> Int32 {
     return 0
 }
 
+// Application entry point with macOS version check
 if #available(macOS 15.0, *) {
     exit(main(args: CommandLine.arguments))
 } else {
