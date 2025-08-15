@@ -80,11 +80,22 @@ func main(args: [String]) -> Int32 {
                 
                 // Get the normalized CGRect value.
                 let boundingBox = boxObservation?.boundingBox ?? .zero
+                
+                line["x0"] = Int((boxObservation?.topLeft.x ?? 0) * CGFloat(imgRef.width))
+                line["y0"] = Int(CGFloat(imgRef.height) - (boxObservation?.topLeft.y ?? 0) * CGFloat(imgRef.height))
+                line["x1"] = Int((boxObservation?.topRight.x ?? 0) * CGFloat(imgRef.width))
+                line["y1"] = Int(CGFloat(imgRef.height) - (boxObservation?.topRight.y ?? 0) * CGFloat(imgRef.height))
+                line["x2"] = Int((boxObservation?.bottomRight.x ?? 0) * CGFloat(imgRef.width))
+                line["y2"] = Int(CGFloat(imgRef.height) - (boxObservation?.bottomRight.y ?? 0) * CGFloat(imgRef.height))
+                line["x3"] = Int((boxObservation?.bottomLeft.x ?? 0) * CGFloat(imgRef.width))
+                line["y3"] = Int(CGFloat(imgRef.height) - (boxObservation?.bottomLeft.y ?? 0) * CGFloat(imgRef.height))
+                
                 // Convert the rectangle from normalized coordinates to image coordinates.
                 let rect = VNImageRectForNormalizedRect(boundingBox,
                                                         Int(imgRef.width),
                                                         Int(imgRef.height))
 
+                
                 line["text"] = string ?? ""
                 line["confidence"] = confidence ?? ""
                 line["x"] = Int(rect.minX)
