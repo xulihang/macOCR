@@ -21,6 +21,18 @@ if #available(macOS 13, *) {
     REVISION = VNRecognizeTextRequestRevision1
 }
 
+// 判断是否为使用空格分隔的语言
+func isSpaceSeparatedLanguage(_ language: String) -> Bool {
+    let spaceSeparatedLanguages = ["en", "fr", "de", "es", "it", "pt", "ru", "ar", "hi", "bn"]
+    let characterSeparatedLanguages = ["zh", "ja", "ko", "th", "vi"]
+    
+    if characterSeparatedLanguages.contains(language) {
+        return false
+    }
+    // 默认使用空格分隔（包括英语等西方语言）
+    return true
+}
+
 func main(args: [String]) -> Int32 {
     
     if CommandLine.arguments.count == 2 {
@@ -80,6 +92,10 @@ func main(args: [String]) -> Int32 {
             var allText = ""
             var index = 0
             
+            // 获取主要语言用于确定分隔方式
+            let primaryLanguage = languages.first ?? "en"
+            let useSpaceSeparator = isSpaceSeparatedLanguage(primaryLanguage)
+            
             for observation in observations {
                 // Find the top observation.
                 let candidate = observation.topCandidates(1).first
@@ -87,54 +103,60 @@ func main(args: [String]) -> Int32 {
                 let confidence = candidate?.confidence ?? 0.0
                 
                 if WORD_LEVEL {
-                    // 单词级别：按空格分割文本，获取每个单词的边界框
-                    let words = string.split(separator: " ")
+                    // 单词级别：根据语言选择分隔符
+                    let segments: [String]
+                    if useSpaceSeparator {
+                        // 空格分隔语言：按单词分割
+                        segments = string.split(separator: " ").map(String.init)
+                    } else {
+                        // 字符分隔语言：按字符分割
+                        segments = string.map(String.init)
+                    }
+                    
                     var currentPosition = string.startIndex
                     
-                    for (wordIndex, word) in words.enumerated() {
-                        let wordString = String(word)
+                    for (segmentIndex, segment) in segments.enumerated() {
+                        // 计算段落在原始字符串中的范围
+                        let segmentRangeStart = currentPosition
+                        let segmentRangeEnd = string.index(segmentRangeStart, offsetBy: segment.count, limitedBy: string.endIndex) ?? string.endIndex
+                        let segmentRange = segmentRangeStart..<segmentRangeEnd
                         
-                        // 计算单词在原始字符串中的范围
-                        let wordRangeStart = currentPosition
-                        let wordRangeEnd = string.index(wordRangeStart, offsetBy: word.count, limitedBy: string.endIndex) ?? string.endIndex
-                        let wordRange = wordRangeStart..<wordRangeEnd
-                        
-                        // 获取单词的边界框
-                        if let wordBoxObservation = try? candidate?.boundingBox(for: wordRange) {
-                            var wordDict:[String:Any] = [:]
+                        // 获取段落的边界框
+                        if let segmentBoxObservation = try? candidate?.boundingBox(for: segmentRange) {
+                            var segmentDict:[String:Any] = [:]
                             
-                            wordDict["x0"] = Int((wordBoxObservation.topLeft.x) * CGFloat(imgRef.width))
-                            wordDict["y0"] = Int(CGFloat(imgRef.height) - (wordBoxObservation.topLeft.y) * CGFloat(imgRef.height))
-                            wordDict["x1"] = Int((wordBoxObservation.topRight.x) * CGFloat(imgRef.width))
-                            wordDict["y1"] = Int(CGFloat(imgRef.height) - (wordBoxObservation.topRight.y) * CGFloat(imgRef.height))
-                            wordDict["x2"] = Int((wordBoxObservation.bottomRight.x) * CGFloat(imgRef.width))
-                            wordDict["y2"] = Int(CGFloat(imgRef.height) - (wordBoxObservation.bottomRight.y) * CGFloat(imgRef.height))
-                            wordDict["x3"] = Int((wordBoxObservation.bottomLeft.x) * CGFloat(imgRef.width))
-                            wordDict["y3"] = Int(CGFloat(imgRef.height) - (wordBoxObservation.bottomLeft.y) * CGFloat(imgRef.height))
+                            segmentDict["x0"] = Int((segmentBoxObservation.topLeft.x) * CGFloat(imgRef.width))
+                            segmentDict["y0"] = Int(CGFloat(imgRef.height) - (segmentBoxObservation.topLeft.y) * CGFloat(imgRef.height))
+                            segmentDict["x1"] = Int((segmentBoxObservation.topRight.x) * CGFloat(imgRef.width))
+                            segmentDict["y1"] = Int(CGFloat(imgRef.height) - (segmentBoxObservation.topRight.y) * CGFloat(imgRef.height))
+                            segmentDict["x2"] = Int((segmentBoxObservation.bottomRight.x) * CGFloat(imgRef.width))
+                            segmentDict["y2"] = Int(CGFloat(imgRef.height) - (segmentBoxObservation.bottomRight.y) * CGFloat(imgRef.height))
+                            segmentDict["x3"] = Int((segmentBoxObservation.bottomLeft.x) * CGFloat(imgRef.width))
+                            segmentDict["y3"] = Int(CGFloat(imgRef.height) - (segmentBoxObservation.bottomLeft.y) * CGFloat(imgRef.height))
                             
                             // 获取归一化的边界框并转换为图像坐标
-                            let wordBoundingBox = wordBoxObservation.boundingBox
-                            let rect = VNImageRectForNormalizedRect(wordBoundingBox,
+                            let segmentBoundingBox = segmentBoxObservation.boundingBox
+                            let rect = VNImageRectForNormalizedRect(segmentBoundingBox,
                                                                     Int(imgRef.width),
                                                                     Int(imgRef.height))
                             
-                            wordDict["text"] = wordString
-                            wordDict["confidence"] = confidence
-                            wordDict["x"] = Int(rect.minX)
-                            wordDict["width"] = Int(rect.size.width)
-                            wordDict["y"] = Int(CGFloat(imgRef.height) - rect.minY - rect.size.height)
-                            wordDict["height"] = Int(rect.size.height)
-                            wordDict["level"] = "word" // 标记为单词级别
+                            segmentDict["text"] = segment
+                            segmentDict["confidence"] = confidence
+                            segmentDict["x"] = Int(rect.minX)
+                            segmentDict["width"] = Int(rect.size.width)
+                            segmentDict["y"] = Int(CGFloat(imgRef.height) - rect.minY - rect.size.height)
+                            segmentDict["height"] = Int(rect.size.height)
+                            segmentDict["level"] = useSpaceSeparator ? "word" : "character" // 标记级别
                             
-                            lines.append(wordDict)
+                            lines.append(segmentDict)
                         }
                         
-                        // 更新位置到下一个单词的起始位置（跳过空格）
-                        if wordIndex < words.count - 1 {
-                            // 移动到当前单词末尾
-                            currentPosition = wordRangeEnd
-                            // 跳过空格（如果有的话）
-                            if currentPosition < string.endIndex && string[currentPosition] == " " {
+                        // 更新位置到下一个段落的起始位置
+                        if segmentIndex < segments.count - 1 {
+                            // 移动到当前段落末尾
+                            currentPosition = segmentRangeEnd
+                            // 对于空格分隔语言，跳过空格
+                            if useSpaceSeparator && currentPosition < string.endIndex && string[currentPosition] == " " {
                                 currentPosition = string.index(after: currentPosition)
                             }
                         }
@@ -185,6 +207,8 @@ func main(args: [String]) -> Int32 {
             dict["lines"] = lines
             dict["text"] = allText
             dict["word_level"] = WORD_LEVEL // 在输出中标记是否启用了单词级别
+            dict["language"] = primaryLanguage // 添加语言信息
+            dict["segment_type"] = WORD_LEVEL ? (useSpaceSeparator ? "word" : "character") : "line" // 添加分段类型
             
             let data = try? JSONSerialization.data(withJSONObject: dict, options: [])
             let jsonString = String(data: data!,
@@ -209,8 +233,11 @@ func main(args: [String]) -> Int32 {
                 # 行级别识别
                 macOCR en false true false ./image.jpg out.json
                 
-                # 单词级别识别  
+                # 单词级别识别（英语）
                 macOCR en false true true ./image.jpg out.json
+                
+                # 字符级别识别（中文）
+                macOCR zh-Hans false true true ./image.jpg out.json
                 
                 # 向后兼容的用法（行级别）
                 macOCR en false true ./image.jpg out.json
