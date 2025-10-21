@@ -3,7 +3,7 @@ Command line OCR tool using macOS's VNRecognizeTextRequest
 
 ```
 usage:
-    language fastmode languageCorrection image_path output_path
+    language fastmode languageCorrection [wordLevel] image_path output_path
     --langs: list suppported languages
 
 example:
