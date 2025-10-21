@@ -26,9 +26,13 @@ func isSpaceSeparatedLanguage(_ language: String) -> Bool {
     let spaceSeparatedLanguages = ["en", "fr", "de", "es", "it", "pt", "ru", "ar", "hi", "bn"]
     let characterSeparatedLanguages = ["zh", "ja", "ko", "th", "vi"]
     
-    if characterSeparatedLanguages.contains(language) {
-        return false
+    // 检查是否是字符分隔的语言（包括带变体的语言代码如 zh-Hans）
+    for separatedLanguage in characterSeparatedLanguages {
+        if language == separatedLanguage || language.hasPrefix(separatedLanguage + "-") {
+            return false
+        }
     }
+    
     // 默认使用空格分隔（包括英语等西方语言）
     return true
 }
