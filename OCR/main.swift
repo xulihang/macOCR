@@ -43,7 +43,7 @@ func main(args: [String]) -> Int32 {
         if args[1] == "--langs" {
             let request = VNRecognizeTextRequest.init()
             request.revision = REVISION
-            request.recognitionLevel = VNRequestTextRecognitionLevel.fast
+            request.recognitionLevel = VNRequestTextRecognitionLevel.accurate
             var langs:[String] = []
             if #available(macOS 12, *) {
                 langs = try! request.supportedRecognitionLanguages()
@@ -55,7 +55,34 @@ func main(args: [String]) -> Int32 {
             }
         }
         return 0
-    }else if CommandLine.arguments.count >= 6 {
+    } else if CommandLine.arguments.count >= 3 && args[1] == "--langs" {
+        // 支持指定识别级别
+        let levelArg = args[2].lowercased()
+        var recognitionLevel: VNRequestTextRecognitionLevel
+        
+        if levelArg == "fast" {
+            recognitionLevel = .fast
+        } else if levelArg == "accurate" {
+            recognitionLevel = .accurate
+        } else {
+            // 如果参数无效，默认使用 accurate
+            recognitionLevel = .accurate
+        }
+        
+        let request = VNRecognizeTextRequest.init()
+        request.revision = REVISION
+        request.recognitionLevel = recognitionLevel
+        var langs:[String] = []
+        if #available(macOS 12, *) {
+            langs = try! request.supportedRecognitionLanguages()
+        } else {
+            langs = try! VNRecognizeTextRequest.supportedRecognitionLanguages(for: request.recognitionLevel, revision:request.revision)
+        }
+        for lang in langs {
+            print(lang)
+        }
+        return 0
+    } else if CommandLine.arguments.count >= 6 {
         let (language, fastmode, languageCorrection, wordLevel, src, dst) =
             (args[1], args[2], args[3], args.count >= 7 ? args[4] : "false",
              args.count >= 7 ? args[5] : args[4], args.count >= 7 ? args[6] : args[5])
@@ -236,7 +263,7 @@ func main(args: [String]) -> Int32 {
         print("""
               usage:
                 language fastmode languageCorrection [wordLevel] image_path output_path
-                --langs: list suppported languages
+                --langs [fast|accurate]: list suppported languages for specified recognition level
               
               examples:
                 # 行级别识别
@@ -250,6 +277,12 @@ func main(args: [String]) -> Int32 {
                 
                 # 向后兼容的用法（行级别）
                 macOCR en false true ./image.jpg out.json
+                
+                # 列出支持的语言（accurate 级别，默认）
+                macOCR --langs
+                
+                # 列出支持的语言（fast 级别）
+                macOCR --langs fast
               """)
         return 1
     }
