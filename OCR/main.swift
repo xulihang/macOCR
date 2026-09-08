@@ -43,9 +43,14 @@ func main(args: [String]) -> Int32 {
         if args[1] == "--langs" {
             let request = VNRecognizeTextRequest.init()
             request.revision = REVISION
-            request.recognitionLevel = VNRequestTextRecognitionLevel.accurate
-            let langs = try? request.supportedRecognitionLanguages()
-            for lang in langs! {
+            request.recognitionLevel = VNRequestTextRecognitionLevel.fast
+            var langs:[String] = []
+            if #available(macOS 12, *) {
+                langs = try! request.supportedRecognitionLanguages()
+            } else {
+                langs = try! VNRecognizeTextRequest.supportedRecognitionLanguages(for: request.recognitionLevel, revision:request.revision)
+            }
+            for lang in langs {
                 print(lang)
             }
         }
