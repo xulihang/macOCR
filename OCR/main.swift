@@ -40,6 +40,16 @@ func isSpaceSeparatedLanguage(_ language: String) -> Bool {
     return true
 }
 
+/// 当前系统是否支持 Live Text（VisionKit 私有的 VKCImageAnalyzer SPI）。
+/// 不支持时调用方应回退到 VNRecognizeTextRequest。
+func isLiveTextAvailable() -> Bool {
+    guard #available(macOS 13.0, *) else { return false }
+    // 引用这个公开符号可以让 VisionKit 注册内部的 SPI 类
+    guard VisionKit.ImageAnalyzer.isSupported else { return false }
+    return NSClassFromString("VKCImageAnalyzer") != nil
+        && NSClassFromString("VKCImageAnalyzerRequest") != nil
+}
+
 // MARK: - Live Text (VisionKit) 支持
 //
 // Live Text 由私有的 `VKCImageAnalyzer` SPI 类提供（ocrmac 的 Python 版本也是用它），
@@ -283,7 +293,13 @@ func main(args: [String]) -> Int32 {
         case "true", "fast":
             MODE = VNRequestTextRecognitionLevel.fast
         case "livetext":
-            USE_LIVETEXT = true
+            // Live Text 优先；系统不支持时回退到 accurate
+            if isLiveTextAvailable() {
+                USE_LIVETEXT = true
+            } else {
+                MODE = VNRequestTextRecognitionLevel.accurate
+                fputs("Warning: Live Text is not available on this system, falling back to accurate mode\n", stderr)
+            }
         default:
             // "false" 或 "accurate"
             MODE = VNRequestTextRecognitionLevel.accurate
@@ -469,7 +485,7 @@ func main(args: [String]) -> Int32 {
         print("""
               usage:
                 language mode languageCorrection [wordLevel] image_path output_path
-                mode: fast/true (快速), accurate/false (精确, 默认), livetext (Live Text, macOS 13+)
+                mode: fast/true (快速), accurate/false (精确, 默认), livetext (Live Text, macOS 13+, 不支持时回退到 accurate)
                 --langs [fast|accurate|livetext]: list suppported languages for specified recognition level
               
               examples:
@@ -482,7 +498,7 @@ func main(args: [String]) -> Int32 {
                 # 字符级别识别（中文）
                 macOCR zh-Hans false true true ./image.jpg out.json
                 
-                # Live Text 识别（macOS 13+）
+                # Live Text 识别（macOS 13+，不支持时自动回退到 accurate）
                 macOCR en livetext true false ./image.jpg out.json
                 
                 # 向后兼容的用法（行级别）
