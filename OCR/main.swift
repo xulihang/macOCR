@@ -6,11 +6,14 @@
 //
 
 import Vision
+import VisionKit
 import Cocoa
+import ObjectiveC.runtime
 
 var MODE = VNRequestTextRecognitionLevel.accurate // or .fast
 var USE_LANG_CORRECTION = false
 var WORD_LEVEL = false // 新增：是否启用单词级别识别
+var USE_LIVETEXT = false // 新增：是否使用 Live Text (VisionKit) 而不是 VNRecognizeTextRequest
 var REVISION:Int
 
 if #available(macOS 13, *) {
@@ -37,6 +40,175 @@ func isSpaceSeparatedLanguage(_ language: String) -> Bool {
     return true
 }
 
+// MARK: - Live Text (VisionKit) 支持
+//
+// Live Text 由私有的 `VKCImageAnalyzer` SPI 类提供（ocrmac 的 Python 版本也是用它），
+// SDK 里没有公开头文件，所以这里通过 Objective-C runtime 动态调用。
+
+private let vkcMsgSend: UnsafeMutableRawPointer? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "objc_msgSend")
+
+private typealias VKCAllocFn = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
+private typealias VKCInitRequestFn = @convention(c) (AnyObject, Selector, AnyObject, UInt) -> Unmanaged<AnyObject>?
+private typealias VKCProcessFn = @convention(c) (AnyObject, Selector, AnyObject, AnyObject, AnyObject) -> Int32
+
+/// 使用 Live Text 识别图片中的文字，并把结果写成与 Vision 路径相同结构的 JSON。
+@available(macOS 13.0, *)
+private func liveTextRecognize(image: NSImage, imageSize: CGSize, languages: [String], wordLevel: Bool, dst: String) -> Int32 {
+    guard let msgSend = vkcMsgSend else {
+        fputs("Error: unable to resolve objc_msgSend\n", stderr)
+        return 1
+    }
+    guard let analyzerClass = NSClassFromString("VKCImageAnalyzer") as AnyObject?,
+          let requestClass = NSClassFromString("VKCImageAnalyzerRequest") as AnyObject? else {
+        fputs("Error: Live Text is not available on this system\n", stderr)
+        return 1
+    }
+
+    let allocFn = unsafeBitCast(msgSend, to: VKCAllocFn.self)
+    let initRequestFn = unsafeBitCast(msgSend, to: VKCInitRequestFn.self)
+    let processFn = unsafeBitCast(msgSend, to: VKCProcessFn.self)
+
+    let analyzer = allocFn(analyzerClass, NSSelectorFromString("alloc"))!.takeUnretainedValue()
+    _ = initRequestFn(analyzer, NSSelectorFromString("init"), analyzer, 0)
+
+    let allocatedRequest = allocFn(requestClass, NSSelectorFromString("alloc"))!.takeUnretainedValue()
+    guard let request = initRequestFn(allocatedRequest, NSSelectorFromString("initWithImage:requestType:"), image, 1)?.takeRetainedValue() else {
+        fputs("Error: failed to create a Live Text request\n", stderr)
+        return 1
+    }
+
+    // 设置语言偏好（与 ocrmac 的 language_preference 一致）
+    if !languages.isEmpty {
+        _ = request.perform(NSSelectorFromString("setLocales:"), with: languages as NSArray)
+    }
+
+    let width = imageSize.width
+    let height = imageSize.height
+    let primaryLanguage = languages.first ?? "en"
+    let useSpaceSeparator = isSpaceSeparatedLanguage(primaryLanguage)
+
+    var finished = false
+    var lines: [[String: Any]] = []
+    var allText = ""
+    var analysisError: String?
+
+    let progressHandler: @convention(block) (Double) -> Void = { _ in }
+    let completionHandler: @convention(block) (AnyObject?, AnyObject?) -> Void = { analysis, error in
+        defer { finished = true }
+        if let error = error {
+            analysisError = "\(error)"
+            return
+        }
+        guard let analysis = analysis else {
+            analysisError = "no analysis result"
+            return
+        }
+
+        func stringValue(_ object: NSObject) -> String {
+            return (object.perform(NSSelectorFromString("string"))?.takeUnretainedValue() as? String) ?? ""
+        }
+
+        // VKQuad 的坐标是归一化的，且原点在左上角。
+        func makeLine(_ object: NSObject, level: String) -> [String: Any] {
+            let quad = object.value(forKey: "quad") as? NSObject
+            func point(_ key: String) -> CGPoint {
+                return (quad?.value(forKey: key) as? NSValue)?.pointValue ?? .zero
+            }
+            func pointValue(_ key: String) -> (Int, Int) {
+                let p = point(key)
+                return (Int(p.x * width), Int(p.y * height))
+            }
+
+            var rect = CGRect.zero
+            if let value = quad?.value(forKey: "boundingBox") as? NSValue {
+                rect = value.rectValue
+            }
+
+            let (x0, y0) = pointValue("topLeft")
+            let (x1, y1) = pointValue("topRight")
+            let (x2, y2) = pointValue("bottomRight")
+            let (x3, y3) = pointValue("bottomLeft")
+
+            var dict: [String: Any] = [:]
+            dict["x0"] = x0
+            dict["y0"] = y0
+            dict["x1"] = x1
+            dict["y1"] = y1
+            dict["x2"] = x2
+            dict["y2"] = y2
+            dict["x3"] = x3
+            dict["y3"] = y3
+            dict["x"] = Int(rect.minX * width)
+            dict["y"] = Int(rect.minY * height)
+            dict["width"] = Int(rect.size.width * width)
+            dict["height"] = Int(rect.size.height * height)
+            dict["text"] = stringValue(object)
+            dict["confidence"] = 1.0
+            dict["level"] = level
+            return dict
+        }
+
+        let lineObjects = analysis.perform(NSSelectorFromString("allLines"))?.takeUnretainedValue() as? NSArray ?? []
+        var textParts: [String] = []
+        for case let line as NSObject in lineObjects {
+            textParts.append(stringValue(line))
+            if wordLevel {
+                let children = line.perform(NSSelectorFromString("children"))?.takeUnretainedValue() as? NSArray ?? []
+                if children.count > 0 {
+                    for case let child as NSObject in children {
+                        lines.append(makeLine(child, level: useSpaceSeparator ? "word" : "character"))
+                    }
+                    continue
+                }
+            }
+            lines.append(makeLine(line, level: "line"))
+        }
+        allText = textParts.joined(separator: "\n")
+    }
+
+    let progressObject = unsafeBitCast(progressHandler, to: AnyObject.self)
+    let completionObject = unsafeBitCast(completionHandler, to: AnyObject.self)
+
+    _ = processFn(analyzer, NSSelectorFromString("processRequest:progressHandler:completionHandler:"),
+                  request as AnyObject, progressObject, completionObject)
+
+    // Live Text 是异步的，这里跑 run loop 等待（与 ocrmac 跑 CFRunLoop 的做法一致）。
+    let deadline = Date().addingTimeInterval(30)
+    while !finished && Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+    withExtendedLifetime([progressHandler, completionHandler, request, analyzer]) {}
+
+    if !finished {
+        fputs("Error: Live Text analysis timed out\n", stderr)
+        return 1
+    }
+    if let analysisError = analysisError {
+        fputs("Error: Live Text analysis failed: \(analysisError)\n", stderr)
+        return 1
+    }
+
+    var dict: [String: Any] = [:]
+    dict["lines"] = lines
+    dict["text"] = allText
+    dict["word_level"] = wordLevel
+    dict["language"] = primaryLanguage
+    dict["segment_type"] = wordLevel ? (useSpaceSeparator ? "word" : "character") : "line"
+
+    guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+          let jsonString = String(data: data, encoding: .utf8) else {
+        fputs("Error: failed to serialize Live Text result\n", stderr)
+        return 1
+    }
+    do {
+        try jsonString.write(to: URL(fileURLWithPath: dst), atomically: true, encoding: String.Encoding.utf8)
+    } catch {
+        fputs("Error: failed to write '\(dst)': \(error)\n", stderr)
+        return 1
+    }
+    return 0
+}
+
 func main(args: [String]) -> Int32 {
     
     if CommandLine.arguments.count == 2 {
@@ -58,6 +230,20 @@ func main(args: [String]) -> Int32 {
     } else if CommandLine.arguments.count >= 3 && args[1] == "--langs" {
         // 支持指定识别级别
         let levelArg = args[2].lowercased()
+
+        // Live Text 支持的语言来自 VisionKit 的 ImageAnalyzer
+        if levelArg == "livetext" {
+            if #available(macOS 13.0, *) {
+                for lang in VisionKit.ImageAnalyzer.supportedTextRecognitionLanguages {
+                    print(lang)
+                }
+            } else {
+                fputs("Error: Live Text requires macOS 13.0 or later\n", stderr)
+                return 1
+            }
+            return 0
+        }
+
         var recognitionLevel: VNRequestTextRecognitionLevel
         
         if levelArg == "fast" {
@@ -93,9 +279,13 @@ func main(args: [String]) -> Int32 {
             languages.append(String(substring))
         }
         
-        if fastmode == "true" {
+        switch fastmode.lowercased() {
+        case "true", "fast":
             MODE = VNRequestTextRecognitionLevel.fast
-        }else{
+        case "livetext":
+            USE_LIVETEXT = true
+        default:
+            // "false" 或 "accurate"
             MODE = VNRequestTextRecognitionLevel.accurate
         }
         
@@ -119,6 +309,22 @@ func main(args: [String]) -> Int32 {
         guard let imgRef = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             fputs("Error: failed to convert NSImage to CGImage for '\(src)'\n", stderr)
             return 1
+        }
+
+        // Live Text 走 VisionKit 的 VKCImageAnalyzer，输出结构与 Vision 路径保持一致
+        if USE_LIVETEXT {
+            if #available(macOS 13.0, *) {
+                return liveTextRecognize(
+                    image: img,
+                    imageSize: CGSize(width: imgRef.width, height: imgRef.height),
+                    languages: languages,
+                    wordLevel: WORD_LEVEL,
+                    dst: dst
+                )
+            } else {
+                fputs("Error: Live Text requires macOS 13.0 or later\n", stderr)
+                return 1
+            }
         }
 
         let request = VNRecognizeTextRequest { (request, error) in
@@ -262,8 +468,9 @@ func main(args: [String]) -> Int32 {
     }else{
         print("""
               usage:
-                language fastmode languageCorrection [wordLevel] image_path output_path
-                --langs [fast|accurate]: list suppported languages for specified recognition level
+                language mode languageCorrection [wordLevel] image_path output_path
+                mode: fast/true (快速), accurate/false (精确, 默认), livetext (Live Text, macOS 13+)
+                --langs [fast|accurate|livetext]: list suppported languages for specified recognition level
               
               examples:
                 # 行级别识别
@@ -275,6 +482,9 @@ func main(args: [String]) -> Int32 {
                 # 字符级别识别（中文）
                 macOCR zh-Hans false true true ./image.jpg out.json
                 
+                # Live Text 识别（macOS 13+）
+                macOCR en livetext true false ./image.jpg out.json
+                
                 # 向后兼容的用法（行级别）
                 macOCR en false true ./image.jpg out.json
                 
@@ -283,6 +493,9 @@ func main(args: [String]) -> Int32 {
                 
                 # 列出支持的语言（fast 级别）
                 macOCR --langs fast
+                
+                # 列出支持的语言（livetext 级别，macOS 13+）
+                macOCR --langs livetext
               """)
         return 1
     }
